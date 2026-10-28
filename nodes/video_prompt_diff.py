@@ -118,7 +118,7 @@ def _clean_value(value):
 
 
 def _extract_prompt_values(prompt, workflow, include_settings, ignore_seed):
-    """Extract scalar inputs from the execution graph, using workflow titles to identify text nodes."""
+    """Extract effective prompt/settings values; resolve linked controls via their source primitive nodes."""
     result = {}
     if not isinstance(prompt, dict):
         return result
@@ -133,7 +133,8 @@ def _extract_prompt_values(prompt, workflow, include_settings, ignore_seed):
     text_node = re.compile(r"(prompt|text|stringmultiline|textencode|caption|builder|qwen)", re.I)
     setting_input = re.compile(
         r"(model|lora|seed|steps|cfg|guidance|sampler|scheduler|width|height|frames|length|fps|"
-        r"strength|temperature|shift|noise|resolution|duration|aspect|clip_name|vae_name|unet_name)", re.I
+        r"megapixels?|strength|temperature|shift|noise|resolution|duration|aspect|clip_name|vae_name|unet_name|"
+        r"control_after_generate)", re.I
     )
     ignored_keys = {"filename_prefix", "video-preview", "preview_method", "preview_rate"}
 
@@ -148,23 +149,30 @@ def _extract_prompt_values(prompt, workflow, include_settings, ignore_seed):
         title = str(wf_node.get("title") or node.get("_meta", {}).get("title") or "")
         node_label = title or class_type
         text_context = bool(text_node.search(class_type + " " + title))
-
+        primitive = class_type.startswith("Primitive")
         for input_name, value in inputs.items():
             key_name = str(input_name)
             if key_name in ignored_keys or isinstance(value, (dict, list)):
-                # Lists/dicts in the execution prompt generally encode links.
+                # Connected inputs are links, not literal values; their source primitive is diffed separately.
                 continue
-            if ignore_seed and re.search(r"seed", key_name, re.I):
+            if ignore_seed and re.search(r"seed", key_name + " " + title, re.I):
                 continue
             is_text = bool(text_input.search(key_name))
-            # H3 workflows often place enormous prompt strings on generic "value"
-            # or "template" inputs of PrimitiveStringMultiline / PromptBuilder nodes.
+            # H3 workflows often put prompt strings in generic value/template fields.
             if not is_text and text_context and key_name.lower() in {
                 "value", "template", "all_chunks", "appearance", "outfit",
                 "location", "action", "character", "system_prompt"
             }:
                 is_text = True
-            is_setting = include_settings and bool(setting_input.search(key_name))
+            # Meaningful primitive nodes (e.g. LENGTH, STEPS, MEGAPIXELS) store
+            # their widget value under the generic input name "value".
+            is_primitive_setting = (
+                primitive and key_name.lower() == "value"
+                and bool(setting_input.search(title))
+            )
+            is_setting = include_settings and (
+                bool(setting_input.search(key_name)) or is_primitive_setting
+            )
             if not is_text and not is_setting:
                 continue
             if not isinstance(value, (str, int, float, bool)):
@@ -173,15 +181,13 @@ def _extract_prompt_values(prompt, workflow, include_settings, ignore_seed):
             if value == "":
                 continue
             group = "Prompt" if is_text else "Setting"
-            key = group + " / " + node_label + " [" + class_type + "] / " + key_name
-            if key in result:
+            key = group + " / " + node_label + " / " + key_name
+            if key in result and result[key] != value:
                 key += " (node " + str(node_id) + ")"
             result[key] = value
 
-    # In ComfyUI's executed prompt, a text node may only contain a link such as
-    # ["5861", 0], while the actual widget text lives in workflow.widgets_values_named.
-    # Read text widgets from relevant nodes too; this catches H3 "Positive Prompt"
-    # nodes whose value is supplied by a linked output.
+    # For linked text widgets (especially H3 Positive Prompt), the executed prompt
+    # contains a link, while workflow.widgets_values_named carries the visible text.
     if isinstance(workflow, dict):
         for wf_node in workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else []:
             if not isinstance(wf_node, dict):
@@ -207,22 +213,25 @@ def _extract_prompt_values(prompt, workflow, include_settings, ignore_seed):
                 if value == "":
                     continue
                 label = wf_title or wf_type
-                key = "Prompt / " + label + " [" + wf_type + "] / " + input_name
-                if key in result and result[key] != value:
-                    key += " (workflow widget)"
-                result[key] = value
+                key = "Prompt / " + label + " / " + input_name
+                # Runtime prompt inputs are authoritative if present; workflow values
+                # fill gaps only. This prevents reporting the same field twice.
+                result.setdefault(key, value)
 
     return result
 
 
-def _workflow_settings(workflow, ignore_seed):
-    """Collect useful named model/generation settings from workflow widgets."""
+def _workflow_settings(workflow, ignore_seed, prompt=None):
+    """Collect useful named settings absent from the executed prompt; skip connected/stale widgets."""
     result = {}
     if not isinstance(workflow, dict):
         return result
+
+    runtime_nodes = prompt if isinstance(prompt, dict) else {}
     setting_key = re.compile(
         r"(model|lora|seed|steps|cfg|guidance|sampler|scheduler|width|height|frames|length|fps|"
-        r"strength|shift|noise|resolution|duration|aspect|clip_name|vae_name|unet_name|weight_dtype)", re.I
+        r"megapixels?|strength|shift|noise|resolution|duration|aspect|clip_name|vae_name|unet_name|weight_dtype|"
+        r"dense_steps|dense_last_steps|preview_fps|max_resolution)", re.I
     )
     for node in workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else []:
         if not isinstance(node, dict):
@@ -231,19 +240,29 @@ def _workflow_settings(workflow, ignore_seed):
         if not isinstance(named, dict):
             continue
         title = str(node.get("title") or node.get("type") or "node")
+        node_id = str(node.get("id", ""))
+        runtime_inputs = runtime_nodes.get(node_id, {}).get("inputs", {})
+        if not isinstance(runtime_inputs, dict):
+            runtime_inputs = {}
         for name, value in named.items():
             name = str(name)
+            name_lower = name.lower()
+            if name_lower in {"resolution_display", "preview", "preview_image", "status", "progress"}:
+                continue
             if not setting_key.search(name):
                 continue
             if ignore_seed and re.search(r"seed", name, re.I):
+                continue
+            # When an input is linked, the widget's stored value is not effective;
+            # the connected primitive/source is compared elsewhere.
+            if isinstance(runtime_inputs.get(name), (list, dict)):
                 continue
             if isinstance(value, (dict, list)):
                 continue
             value = _clean_value(value)
             key = "Setting / " + title + " / " + name
-            if key in result:
-                key += " (node " + str(node.get("id", "")) + ")"
-            result[key] = value
+            # Prefer the executed prompt graph; this routine is fallback-only.
+            result.setdefault(key, value)
     return result
 
 
@@ -289,8 +308,8 @@ def _format_diff(path_a, path_b, metadata_a, metadata_b, compare, ignore_seed):
     _debug("A extracted keys={}".format(list(old_values.keys())[:40]))
     _debug("B extracted keys={}".format(list(new_values.keys())[:40]))
     if compare == "Prompt + settings":
-        old_values.update(_workflow_settings(metadata_a["workflow"], ignore_seed))
-        new_values.update(_workflow_settings(metadata_b["workflow"], ignore_seed))
+        old_values.update({k: v for k, v in _workflow_settings(metadata_a["workflow"], ignore_seed, metadata_a["prompt"]).items() if k not in old_values})
+        new_values.update({k: v for k, v in _workflow_settings(metadata_b["workflow"], ignore_seed, metadata_b["prompt"]).items() if k not in new_values})
 
     changes = []
     for key in sorted(set(old_values) | set(new_values), key=str.casefold):
