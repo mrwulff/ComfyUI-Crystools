@@ -21,6 +21,7 @@ from .nodes.list import CListAny, CListString
 from .nodes.pipe import CPipeToAny, CPipeFromAny
 from .nodes.utils import CUtilsCompareJsons, CUtilsStatSystem
 from .nodes.metadata import CMetadataExtractor, CMetadataCompare
+from .nodes.video_prompt_diff import CVideoPromptDiff
 from .nodes.parameters import CJsonFile, CJsonExtractor
 from .server import *
 from .general import *
@@ -57,6 +58,7 @@ NODE_CLASS_MAPPINGS = {
 
     CLASSES.CMETADATA_EXTRACTOR_NAME.value: CMetadataExtractor,
     CLASSES.CMETADATA_COMPARATOR_NAME.value: CMetadataCompare,
+    "Video Prompt Diff [Crystools]": CVideoPromptDiff,
     CLASSES.CUTILS_JSON_COMPARATOR_NAME.value: CUtilsCompareJsons,
     CLASSES.CUTILS_STAT_SYSTEM_NAME.value: CUtilsStatSystem,
     CLASSES.CJSONFILE_NAME.value: CJsonFile,
@@ -95,6 +97,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
     CLASSES.CMETADATA_EXTRACTOR_NAME.value: CLASSES.CMETADATA_EXTRACTOR_DESC.value,
     CLASSES.CMETADATA_COMPARATOR_NAME.value: CLASSES.CMETADATA_COMPARATOR_DESC.value,
+    "Video Prompt Diff [Crystools]": "Video Prompt Diff",
 
     CLASSES.CUTILS_JSON_COMPARATOR_NAME.value: CLASSES.CUTILS_JSON_COMPARATOR_DESC.value,
     CLASSES.CUTILS_STAT_SYSTEM_NAME.value: CLASSES.CUTILS_STAT_SYSTEM_DESC.value,
