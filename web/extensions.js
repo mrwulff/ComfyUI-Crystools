@@ -58,26 +58,34 @@ app.registerExtension({
                     }
 
                     try {
+                        console.info("[Crystools Video Prompt Diff DEBUG] selected local file", {
+                            name: file.name, size: file.size, type: file.type,
+                            note: "Browser does not expose the original absolute Windows path; this file will be copied to the ComfyUI server."
+                        });
                         const form = new FormData();
                         form.append("image", file, file.name);
                         form.append("type", "input");
                         form.append("subfolder", "crystools_video_diff");
                         form.append("overwrite", "false");
 
+                        console.info("[Crystools Video Prompt Diff DEBUG] uploading to ComfyUI input subfolder crystools_video_diff");
                         const response = await fetch("/upload/image", {
                             method: "POST",
                             body: form,
                         });
+                        console.info("[Crystools Video Prompt Diff DEBUG] upload response status", response.status);
                         if (!response.ok) {
                             const details = await response.text();
                             throw new Error("ComfyUI upload failed (" + response.status + "): " + details);
                         }
 
                         const uploaded = await response.json();
+                        console.info("[Crystools Video Prompt Diff DEBUG] server upload result", uploaded);
                         const widget = node.widgets?.find((w) => w.name === widgetName);
                         if (!widget) throw new Error("Could not find node field: " + widgetName);
 
                         widget.value = [uploaded.subfolder, uploaded.name].filter(Boolean).join("/");
+                        console.info("[Crystools Video Prompt Diff DEBUG] field set to server-relative path", widget.value);
                         if (typeof widget.callback === "function") {
                             widget.callback(widget.value, app.canvas, node);
                         }
