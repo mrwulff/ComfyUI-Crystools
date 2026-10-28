@@ -294,6 +294,29 @@ def _word_diff(old, new, max_changes=16):
     return "\n    ".join(fragments) if fragments else "(text differs only in whitespace)"
 
 
+
+def _canonicalize_values(values):
+    """Collapse duplicate representations of the same node/input while retaining a readable label."""
+    result = {}
+    for label, value in values.items():
+        # Old/existing metadata may include the class in brackets while newer
+        # extraction uses the human title only. Normalize those to one key.
+        plain = re.sub(r"\[[^\]]*\]", "", str(label))
+        canonical = re.sub(r"[^a-z0-9]+", "", plain.lower())
+        if canonical in result:
+            if result[canonical]["value"] == value:
+                continue
+            # Real conflicting values on the same normalized key must not be lost.
+            index = 2
+            unique = canonical + "duplicate" + str(index)
+            while unique in result:
+                index += 1
+                unique = canonical + "duplicate" + str(index)
+            canonical = unique
+        result[canonical] = {"label": str(label), "value": value}
+    return result
+
+
 def _format_diff(path_a, path_b, metadata_a, metadata_b, compare, ignore_seed):
     prompt_only = compare == "Prompt text only"
     old_values = _extract_prompt_values(
@@ -302,36 +325,52 @@ def _format_diff(path_a, path_b, metadata_a, metadata_b, compare, ignore_seed):
     new_values = _extract_prompt_values(
         metadata_b["prompt"], metadata_b["workflow"], not prompt_only, ignore_seed
     )
-    _debug("extracted values A={} B={}; mode={!r}; ignore_seed={}".format(
-        len(old_values), len(new_values), compare, ignore_seed
-    ))
-    _debug("A extracted keys={}".format(list(old_values.keys())[:40]))
-    _debug("B extracted keys={}".format(list(new_values.keys())[:40]))
     if compare == "Prompt + settings":
-        old_values.update({k: v for k, v in _workflow_settings(metadata_a["workflow"], ignore_seed, metadata_a["prompt"]).items() if k not in old_values})
-        new_values.update({k: v for k, v in _workflow_settings(metadata_b["workflow"], ignore_seed, metadata_b["prompt"]).items() if k not in new_values})
+        old_values.update({k: v for k, v in _workflow_settings(
+            metadata_a["workflow"], ignore_seed, metadata_a["prompt"]
+        ).items() if k not in old_values})
+        new_values.update({k: v for k, v in _workflow_settings(
+            metadata_b["workflow"], ignore_seed, metadata_b["prompt"]
+        ).items() if k not in new_values})
+
+    # Collapse duplicate keys caused by older node-title/class-type formats or by
+    # the same widget appearing in both the execution prompt and workflow widgets.
+    old_norm = _canonicalize_values(old_values)
+    new_norm = _canonicalize_values(new_values)
+    _debug("unique values after normalization A={} B={}".format(len(old_norm), len(new_norm)))
 
     changes = []
-    for key in sorted(set(old_values) | set(new_values), key=str.casefold):
-        if key not in new_values:
-            value = old_values[key]
-            # When removing a prompt field, truncate it rather than flood the output.
-            changes.append("REMOVED  " + key + "\n    - " + _shorten(value))
-        elif key not in old_values:
-            value = new_values[key]
-            changes.append("ADDED    " + key + "\n    + " + _shorten(value))
-        elif old_values[key] != new_values[key]:
-            old, new = old_values[key], new_values[key]
-            if isinstance(old, str) and isinstance(new, str) and (
-                key.startswith("Prompt / ") or max(len(old), len(new)) > 160
-            ):
-                body = _word_diff(old, new)
-                changes.append("CHANGED  " + key + "\n    " + body)
-            else:
-                changes.append(
-                    "CHANGED  " + key + "\n    - " + _shorten(old, 220) +
-                    "\n    + " + _shorten(new, 220)
-                )
+    for key in sorted(set(old_norm) | set(new_norm)):
+        old_item = old_norm.get(key)
+        new_item = new_norm.get(key)
+        label = (old_item or new_item)["label"]
+        if old_item is None:
+            changes.append(("ADDED", label, None, new_item["value"]))
+            continue
+        if new_item is None:
+            changes.append(("REMOVED", label, old_item["value"], None))
+            continue
+
+        old, new = old_item["value"], new_item["value"]
+        if old == new:
+            continue
+        changes.append(("CHANGED", label, old, new))
+
+    rendered = []
+    for status, label, old, new in changes:
+        if status == "REMOVED":
+            rendered.append("REMOVED  " + label + "\n    - " + _shorten(old))
+        elif status == "ADDED":
+            rendered.append("ADDED    " + label + "\n    + " + _shorten(new))
+        elif isinstance(old, str) and isinstance(new, str) and (
+            label.startswith("Prompt / ") or max(len(old), len(new)) > 160
+        ):
+            rendered.append("CHANGED  " + label + "\n    " + _word_diff(old, new))
+        else:
+            rendered.append(
+                "CHANGED  " + label + "\n    - " + _shorten(old, 220) +
+                "\n    + " + _shorten(new, 220)
+            )
 
     header = (
         "Video Prompt Diff\n"
@@ -339,10 +378,10 @@ def _format_diff(path_a, path_b, metadata_a, metadata_b, compare, ignore_seed):
         "B: " + path_b.name + "\n"
         "Mode: " + compare + "\n"
     )
-    _debug("diff changes_count={}; diff_chars={}".format(len(changes), sum(len(c) for c in changes)))
-    if not changes:
+    _debug("diff changes_count={}; diff_chars={}".format(len(rendered), sum(len(c) for c in rendered)))
+    if not rendered:
         return header + "\nNo differences found in the selected fields."
-    return header + "\n" + "\n\n".join(changes)
+    return header + "\n" + "\n\n".join(rendered)
 
 
 class CVideoPromptDiff:
