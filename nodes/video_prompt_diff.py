@@ -143,6 +143,41 @@ def _extract_prompt_values(prompt, workflow, include_settings, ignore_seed):
             if key in result:
                 key += " (node " + str(node_id) + ")"
             result[key] = value
+
+    # In ComfyUI's executed prompt, a text node may only contain a link such as
+    # ["5861", 0], while the actual widget text lives in workflow.widgets_values_named.
+    # Read text widgets from relevant nodes too; this catches H3 "Positive Prompt"
+    # nodes whose value is supplied by a linked output.
+    if isinstance(workflow, dict):
+        for wf_node in workflow.get("nodes", []) if isinstance(workflow.get("nodes"), list) else []:
+            if not isinstance(wf_node, dict):
+                continue
+            named = wf_node.get("widgets_values_named")
+            if not isinstance(named, dict):
+                continue
+            wf_title = str(wf_node.get("title") or "")
+            wf_type = str(wf_node.get("type") or "")
+            if not text_node.search(wf_title + " " + wf_type):
+                continue
+            for input_name, value in named.items():
+                input_name = str(input_name)
+                if input_name.lower() not in {
+                    "value", "text", "prompt", "positive", "negative", "template",
+                    "all_chunks", "appearance", "outfit", "location", "action",
+                    "character", "system_prompt"
+                }:
+                    continue
+                if isinstance(value, (dict, list)) or not isinstance(value, (str, int, float, bool)):
+                    continue
+                value = _clean_value(value)
+                if value == "":
+                    continue
+                label = wf_title or wf_type
+                key = "Prompt / " + label + " [" + wf_type + "] / " + input_name
+                if key in result and result[key] != value:
+                    key += " (workflow widget)"
+                result[key] = value
+
     return result
 
 
