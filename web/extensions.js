@@ -9,6 +9,7 @@ const crystoolsExtensions = {
     'Preview from image [Crystools]': 'Crystools.Image.PreviewFromImage',
     'Preview from metadata [Crystools]': 'Crystools.Image.PreviewFromMetadata',
     'Metadata comparator [Crystools]': 'Crystools.Metadata.MetadataComparator',
+    'Video Prompt Diff [Crystools]': 'Crystools.Metadata.VideoPromptDiff',
     'Stats system [Crystools]': 'Crystools.Utils.StatsSystem',
     'Show any to JSON [Crystools]': 'Crystools.Debugger.ConsoleAnyToJson',
 };
